@@ -1,0 +1,16 @@
+# Build output
+target/
+out/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Local application data
+data/
+logs/
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
