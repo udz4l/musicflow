@@ -1,6 +1,7 @@
 package com.musicflow.service;
 
 import com.musicflow.audio.PcmAudioPlayer;
+import com.musicflow.audio.PlaybackControl;
 import com.musicflow.audio.effect.AudioProcessor;
 import com.musicflow.audio.effect.DryProcessor;
 import com.musicflow.audio.effect.EchoDecorator;
@@ -34,9 +35,10 @@ public final class MusicServiceFacade {
     private Playlist playlist;
     private int currentIndex = -1;
 
-    private PlaybackStrategy strategy = new SequentialStrategy();
-    private float volume = 0.7f;
-    private boolean echoEnabled;
+    private volatile PlaybackStrategy strategy = new SequentialStrategy();
+    private volatile float volume = 0.7f;
+    private volatile boolean echoEnabled;
+    private volatile VolumeDecorator activeVolume;
 
     public MusicServiceFacade(
             MusicSource source,
@@ -52,7 +54,7 @@ public final class MusicServiceFacade {
                 "Player is required"
         );
 
-        this.player.addListener(history);
+        player.addListener(history);
     }
 
     public List<Track> loadCatalog() throws IOException {
@@ -96,7 +98,14 @@ public final class MusicServiceFacade {
                 .description(description);
 
         for (String id : trackIds) {
-            builder.addTrack(findTrack(id));
+            Track track = catalog.stream()
+                    .filter(item -> item.id().equals(id))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Unknown track ID: " + id
+                    ));
+
+            builder.addTrack(track);
         }
 
         return builder.build();
@@ -126,6 +135,12 @@ public final class MusicServiceFacade {
         }
 
         this.volume = volume;
+
+        VolumeDecorator current = activeVolume;
+
+        if (current != null) {
+            current.setGain(volume);
+        }
     }
 
     public void setEchoEnabled(boolean enabled) {
@@ -137,33 +152,86 @@ public final class MusicServiceFacade {
             UnsupportedAudioFileException,
             LineUnavailableException {
 
-        if (playlist == null) {
-            throw new IllegalStateException(
-                    "Select a playlist before playback"
-            );
+        return playNext(new PlaybackControl());
+    }
+
+    public Optional<Track> playNext(PlaybackControl control)
+            throws IOException,
+            UnsupportedAudioFileException,
+            LineUnavailableException {
+
+        Objects.requireNonNull(control, "Playback control is required");
+        requirePlaylist();
+
+        if (control.isStopped()) {
+            return Optional.empty();
         }
 
-        List<Track> tracks = playlist.tracks();
-        int nextIndex = strategy.nextIndex(tracks, currentIndex);
+        int nextIndex = strategy.nextIndex(
+                playlist.tracks(),
+                currentIndex
+        );
 
         if (nextIndex == -1) {
             return Optional.empty();
         }
 
-        if (nextIndex < 0 || nextIndex >= tracks.size()) {
-            throw new IllegalStateException(
-                    "Playback strategy returned an invalid index"
+        return playAt(nextIndex, control);
+    }
+
+    public Optional<Track> playAt(
+            int index,
+            PlaybackControl control
+    ) throws IOException,
+            UnsupportedAudioFileException,
+            LineUnavailableException {
+
+        Objects.requireNonNull(control, "Playback control is required");
+        requirePlaylist();
+
+        if (index < 0 || index >= playlist.tracks().size()) {
+            throw new IllegalArgumentException(
+                    "Invalid playlist index: " + index
             );
         }
 
-        Track track = tracks.get(nextIndex);
+        if (control.isStopped()) {
+            return Optional.empty();
+        }
 
-        player.play(track, createProcessor());
+        currentIndex = index;
+        Track track = playlist.tracks().get(index);
 
-        // Advance only after successful playback.
-        currentIndex = nextIndex;
+        AudioProcessor processor = new DryProcessor();
 
-        return Optional.of(track);
+        if (echoEnabled) {
+            processor = new EchoDecorator(
+                    processor,
+                    PcmAudioPlayer.SAMPLE_RATE,
+                    250,
+                    0.5f
+            );
+        }
+
+        VolumeDecorator output = new VolumeDecorator(
+                processor,
+                volume
+        );
+
+        activeVolume = output;
+
+        // Apply the latest value if it changed during construction.
+        output.setGain(volume);
+
+        try {
+            boolean completed = player.play(track, output, control);
+
+            return completed
+                    ? Optional.of(track)
+                    : Optional.empty();
+        } finally {
+            activeVolume = null;
+        }
     }
 
     public List<ListeningHistory.Entry> historyEntries() {
@@ -178,29 +246,11 @@ public final class MusicServiceFacade {
         player.removeListener(listener);
     }
 
-    private Track findTrack(String id) {
-        Objects.requireNonNull(id, "Track ID is required");
-
-        return catalog.stream()
-                .filter(track -> track.id().equals(id))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Unknown track ID: " + id
-                ));
-    }
-
-    private AudioProcessor createProcessor() {
-        AudioProcessor processor = new DryProcessor();
-
-        if (echoEnabled) {
-            processor = new EchoDecorator(
-                    processor,
-                    PcmAudioPlayer.SAMPLE_RATE,
-                    250,
-                    0.5f
+    private void requirePlaylist() {
+        if (playlist == null) {
+            throw new IllegalStateException(
+                    "Select a playlist before playback"
             );
         }
-
-        return new VolumeDecorator(processor, volume);
     }
 }
