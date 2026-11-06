@@ -15,6 +15,7 @@ import java.net.URI;
 import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Objects;
 
 public final class PcmAudioPlayer {
@@ -29,8 +30,24 @@ public final class PcmAudioPlayer {
             UnsupportedAudioFileException,
             LineUnavailableException {
 
+        play(audioUri, processor, new PlaybackControl());
+    }
+
+    public boolean play(
+            URI audioUri,
+            AudioProcessor processor,
+            PlaybackControl control
+    ) throws IOException,
+            UnsupportedAudioFileException,
+            LineUnavailableException {
+
         Objects.requireNonNull(audioUri, "Audio URI is required");
         Objects.requireNonNull(processor, "Processor is required");
+        Objects.requireNonNull(control, "Playback control is required");
+
+        if (!control.awaitReady()) {
+            return false;
+        }
 
         try (InputStream input = openInput(audioUri);
              BufferedInputStream buffered = new BufferedInputStream(input);
@@ -40,11 +57,19 @@ public final class PcmAudioPlayer {
             AudioFormat format = audio.getFormat();
             validateFormat(format);
 
+            if (!control.awaitReady()) {
+                return false;
+            }
+
             SourceDataLine line = AudioSystem.getSourceDataLine(format);
 
             try {
-                line.open(format);
-                line.start();
+                // Keep the output buffer small for responsive controls.
+                line.open(format, BLOCK_SAMPLES * BYTES_PER_SAMPLE * 4);
+
+                if (!control.attach(line)) {
+                    return false;
+                }
 
                 byte[] bytes = new byte[
                         BLOCK_SAMPLES * BYTES_PER_SAMPLE
@@ -52,15 +77,19 @@ public final class PcmAudioPlayer {
 
                 float[] samples = new float[BLOCK_SAMPLES];
 
-                int bytesRead;
+                while (control.awaitReady()) {
+                    int bytesRead = audio.read(bytes, 0, bytes.length);
 
-                while ((bytesRead = audio.read(
-                        bytes,
-                        0,
-                        bytes.length
-                )) != -1) {
+                    if (bytesRead == -1) {
+                        break;
+                    }
+
                     if (bytesRead == 0) {
                         continue;
+                    }
+
+                    if (!control.awaitReady()) {
+                        return false;
                     }
 
                     int sampleCount = bytesRead / BYTES_PER_SAMPLE;
@@ -68,36 +97,66 @@ public final class PcmAudioPlayer {
                     decode(bytes, samples, sampleCount);
                     processor.process(samples, sampleCount);
                     encode(samples, bytes, sampleCount);
-                    writeFully(line, bytes, bytesRead);
+
+                    if (!writeFully(line, bytes, bytesRead, control)) {
+                        return false;
+                    }
                 }
 
-                // Continue with silence so delayed audio can finish.
+                if (control.isStopped()) {
+                    return false;
+                }
+
                 int tailSamples = SAMPLE_RATE * 2;
 
                 while (tailSamples > 0) {
-                    int count = Math.min(
-                            BLOCK_SAMPLES,
-                            tailSamples
-                    );
+                    if (!control.awaitReady()) {
+                        return false;
+                    }
 
-                    java.util.Arrays.fill(samples, 0, count, 0.0f);
+                    int count = Math.min(BLOCK_SAMPLES, tailSamples);
 
+                    Arrays.fill(samples, 0, count, 0.0f);
                     processor.process(samples, count);
                     encode(samples, bytes, count);
-                    writeFully(
+
+                    if (!writeFully(
                             line,
                             bytes,
-                            count * BYTES_PER_SAMPLE
-                    );
+                            count * BYTES_PER_SAMPLE,
+                            control
+                    )) {
+                        return false;
+                    }
 
                     tailSamples -= count;
                 }
 
+                if (!control.awaitReady()) {
+                    return false;
+                }
+
                 line.drain();
+
+                return !control.isStopped();
             } finally {
-                line.stop();
-                line.close();
+                control.detach();
+
+                if (line.isOpen()) {
+                    line.stop();
+                    line.close();
+                }
             }
+        } catch (IOException
+                 | UnsupportedAudioFileException
+                 | LineUnavailableException
+                 | RuntimeException exception) {
+
+            if (control.isStopped()) {
+                return false;
+            }
+
+            throw exception;
         }
     }
 
@@ -121,12 +180,8 @@ public final class PcmAudioPlayer {
         throw new IOException("Unsupported audio URI: " + uri);
     }
 
-    private void validateFormat(AudioFormat format)
-            throws IOException {
-
-        if (!AudioFormat.Encoding.PCM_SIGNED.equals(
-                format.getEncoding()
-        )
+    private void validateFormat(AudioFormat format) throws IOException {
+        if (!AudioFormat.Encoding.PCM_SIGNED.equals(format.getEncoding())
                 || format.getSampleRate() != SAMPLE_RATE
                 || format.getSampleSizeInBits() != 16
                 || format.getChannels() != 1
@@ -141,26 +196,17 @@ public final class PcmAudioPlayer {
         }
     }
 
-    private void decode(
-            byte[] bytes,
-            float[] samples,
-            int length
-    ) {
+    private void decode(byte[] bytes, float[] samples, int length) {
         for (int i = 0; i < length; i++) {
             int low = bytes[i * 2] & 0xff;
             int high = bytes[i * 2 + 1];
 
             short value = (short) ((high << 8) | low);
-
             samples[i] = value / 32768.0f;
         }
     }
 
-    private void encode(
-            float[] samples,
-            byte[] bytes,
-            int length
-    ) {
+    private void encode(float[] samples, byte[] bytes, int length) {
         for (int i = 0; i < length; i++) {
             float clipped = Math.max(
                     -1.0f,
@@ -175,20 +221,25 @@ public final class PcmAudioPlayer {
         }
     }
 
-    private void writeFully(
+    private boolean writeFully(
             SourceDataLine line,
             byte[] bytes,
-            int length
+            int length,
+            PlaybackControl control
     ) throws IOException {
 
         int offset = 0;
 
         while (offset < length) {
-            int written = line.write(
-                    bytes,
-                    offset,
-                    length - offset
-            );
+            if (!control.awaitReady()) {
+                return false;
+            }
+
+            int written = line.write(bytes, offset, length - offset);
+
+            if (control.isStopped()) {
+                return false;
+            }
 
             if (written <= 0) {
                 throw new IOException(
@@ -198,5 +249,7 @@ public final class PcmAudioPlayer {
 
             offset += written;
         }
+
+        return true;
     }
 }
