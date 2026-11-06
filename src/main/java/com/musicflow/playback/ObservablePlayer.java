@@ -1,6 +1,7 @@
 package com.musicflow.playback;
 
 import com.musicflow.audio.PcmAudioPlayer;
+import com.musicflow.audio.PlaybackControl;
 import com.musicflow.audio.effect.AudioProcessor;
 import com.musicflow.event.PlaybackEvent;
 import com.musicflow.event.PlaybackListener;
@@ -45,8 +46,20 @@ public final class ObservablePlayer {
             UnsupportedAudioFileException,
             LineUnavailableException {
 
+        play(track, processor, new PlaybackControl());
+    }
+
+    public boolean play(
+            Track track,
+            AudioProcessor processor,
+            PlaybackControl control
+    ) throws IOException,
+            UnsupportedAudioFileException,
+            LineUnavailableException {
+
         Objects.requireNonNull(track, "Track is required");
         Objects.requireNonNull(processor, "Processor is required");
+        Objects.requireNonNull(control, "Playback control is required");
 
         publish(
                 PlaybackEvent.Type.REQUESTED,
@@ -55,7 +68,21 @@ public final class ObservablePlayer {
         );
 
         try {
-            player.play(track.audioUri(), processor);
+            boolean completed = player.play(
+                    track.audioUri(),
+                    processor,
+                    control
+            );
+
+            publish(
+                    completed
+                            ? PlaybackEvent.Type.COMPLETED
+                            : PlaybackEvent.Type.STOPPED,
+                    track,
+                    completed ? "Playback completed" : "Playback stopped"
+            );
+
+            return completed;
         } catch (IOException
                  | UnsupportedAudioFileException
                  | LineUnavailableException
@@ -73,12 +100,6 @@ public final class ObservablePlayer {
 
             throw exception;
         }
-
-        publish(
-                PlaybackEvent.Type.COMPLETED,
-                track,
-                "Playback completed"
-        );
     }
 
     private void publish(
