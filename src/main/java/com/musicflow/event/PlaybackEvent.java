@@ -15,6 +15,7 @@ public record PlaybackEvent(
     public enum Type {
         REQUESTED,
         COMPLETED,
+        STOPPED,
         FAILED
     }
 
