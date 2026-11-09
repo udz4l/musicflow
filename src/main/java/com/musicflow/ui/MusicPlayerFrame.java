@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,6 +66,11 @@ public final class MusicPlayerFrame extends JFrame {
     private final JLabel nowPlaying = new JLabel("No track selected");
     private final JLabel status = new JLabel("Ready");
 
+    private final JProgressBar progressBar = new JProgressBar(0, 1000);
+    private final JLabel captionLabel = new JLabel(" ");
+    private final Timer progressTimer = new Timer(100, event -> refreshProgress());
+
+    private Track activeTrack;
     private PlaybackControl currentControl;
     private boolean busy;
     private boolean queueChanged = true;
@@ -197,7 +203,13 @@ public final class MusicPlayerFrame extends JFrame {
         effects.add(volume);
         effects.add(echo);
 
+        progressBar.setStringPainted(true);
+        progressBar.setAlignmentX(Component.LEFT_ALIGNMENT);
+        progressBar.setString("0:00");
+
         bottom.add(nowPlaying);
+        bottom.add(progressBar);
+        bottom.add(captionLabel);
         bottom.add(controls);
         bottom.add(effects);
         bottom.add(status);
@@ -287,6 +299,7 @@ public final class MusicPlayerFrame extends JFrame {
             @Override
             public void windowClosing(WindowEvent event) {
                 closing = true;
+                progressTimer.stop();
 
                 if (currentControl != null) {
                     currentControl.stop();
@@ -303,6 +316,7 @@ public final class MusicPlayerFrame extends JFrame {
         refreshCatalog();
         refreshHistory();
         setBusy(false);
+        progressTimer.start();
     }
 
     private void refreshCatalog() {
@@ -471,6 +485,8 @@ public final class MusicPlayerFrame extends JFrame {
 
         PlaybackControl control = new PlaybackControl();
         currentControl = control;
+        activeTrack = null;
+        refreshProgress();
         skipRequested = false;
 
         setBusy(true);
@@ -512,6 +528,8 @@ public final class MusicPlayerFrame extends JFrame {
                 && !control.isStopped());
 
         currentControl = null;
+        activeTrack = null;
+        refreshProgress();
         skipRequested = false;
         setBusy(false);
 
@@ -538,6 +556,7 @@ public final class MusicPlayerFrame extends JFrame {
         }
 
         if (event.type() == PlaybackEvent.Type.REQUESTED) {
+            activeTrack = event.track();
             nowPlaying.setText(
                     event.track().artist()
                             + " — "
@@ -555,6 +574,54 @@ public final class MusicPlayerFrame extends JFrame {
         if (event.type() == PlaybackEvent.Type.COMPLETED) {
             refreshHistory();
         }
+    }
+
+    private void refreshProgress() {
+        if (currentControl == null) {
+            progressBar.setIndeterminate(false);
+            progressBar.setValue(0);
+            progressBar.setString("0:00");
+            captionLabel.setText(" ");
+            return;
+        }
+
+        PlaybackControl.Progress progress = currentControl.progress();
+        long position = progress.positionMillis();
+        long duration = progress.durationMillis();
+
+        progressBar.setIndeterminate(duration <= 0 && position == 0);
+
+        if (duration > 0) {
+            progressBar.setValue((int) (1000.0 * position / duration));
+            progressBar.setString(clock(position) + " / " + clock(duration));
+        } else {
+            progressBar.setValue(0);
+            progressBar.setString(clock(position));
+        }
+
+        captionLabel.setText(demoCaption(position, duration));
+    }
+
+    private String demoCaption(long position, long duration) {
+        if (activeTrack == null || duration <= 0
+                || !"MusicFlow Demo".equalsIgnoreCase(activeTrack.artist())) {
+            return " ";
+        }
+
+        if (position < duration / 3) {
+            return "Instrumental demo: opening";
+        }
+
+        if (position < 2 * duration / 3) {
+            return "Instrumental demo: middle";
+        }
+
+        return "Instrumental demo: ending";
+    }
+
+    private static String clock(long millis) {
+        long seconds = millis / 1000;
+        return String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
     }
 
     private void refreshHistory() {
