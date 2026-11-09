@@ -56,6 +56,7 @@ public final class PcmAudioPlayer {
 
             AudioFormat format = audio.getFormat();
             validateFormat(format);
+            control.setDurationFrames(audio.getFrameLength());
 
             if (!control.awaitReady()) {
                 return false;
