@@ -17,6 +17,8 @@ import javax.swing.UIManager;
 import java.nio.file.Path;
 import java.util.Arrays;
 
+import com.musicflow.observer.ListeningHistory;
+
 public class Main {
 
     public static void main(String[] args) {
@@ -48,7 +50,8 @@ public class Main {
 
             MusicServiceFacade music = new MusicServiceFacade(
                     source,
-                    new ObservablePlayer(new PcmAudioPlayer())
+                    new ObservablePlayer(new PcmAudioPlayer()),
+                    new ListeningHistory(Path.of("data", "history.tsv"))
             );
 
             music.loadCatalog();
