@@ -8,6 +8,7 @@ import com.musicflow.playback.strategy.RepeatOneStrategy;
 import com.musicflow.playback.strategy.SequentialStrategy;
 import com.musicflow.playback.strategy.ShuffleStrategy;
 import com.musicflow.service.MusicServiceFacade;
+import com.musicflow.storage.PlaylistFile;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -15,6 +16,10 @@ import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -46,6 +51,11 @@ public final class MusicPlayerFrame extends JFrame {
 
     private final JButton addButton = new JButton("Add to queue");
     private final JButton removeButton = new JButton("Remove");
+    private final JButton saveButton = new JButton("Save playlist");
+    private final JButton loadButton = new JButton("Load playlist");
+    private final PlaylistFile playlistFile = new PlaylistFile();
+
+    private String playlistDescription = "Created in the desktop player";
 
     private final JButton playButton = new JButton("Play selected");
     private final JButton nextButton = new JButton("Next");
@@ -121,7 +131,11 @@ public final class MusicPlayerFrame extends JFrame {
                 new JScrollPane(queueList),
                 BorderLayout.CENTER
         );
-        queuePanel.add(removeButton, BorderLayout.SOUTH);
+        JPanel queueActions = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        queueActions.add(removeButton);
+        queueActions.add(saveButton);
+        queueActions.add(loadButton);
+        queuePanel.add(queueActions, BorderLayout.SOUTH);
 
         JSplitPane lists = new JSplitPane(
                 JSplitPane.HORIZONTAL_SPLIT,
@@ -191,6 +205,8 @@ public final class MusicPlayerFrame extends JFrame {
 
         addButton.addActionListener(event -> addSelectedTracks());
         removeButton.addActionListener(event -> removeSelectedTrack());
+        saveButton.addActionListener(event -> savePlaylist());
+        loadButton.addActionListener(event -> loadPlaylist());
 
         playButton.addActionListener(event -> startPlayback(false));
 
@@ -285,6 +301,7 @@ public final class MusicPlayerFrame extends JFrame {
         playlistName.addActionListener(event -> queueChanged = true);
 
         refreshCatalog();
+        refreshHistory();
         setBusy(false);
     }
 
@@ -342,20 +359,95 @@ public final class MusicPlayerFrame extends JFrame {
             return;
         }
 
+        music.selectPlaylist(buildQueuePlaylist());
+        queueChanged = false;
+    }
+
+    private Playlist buildQueuePlaylist() {
         List<String> ids = new ArrayList<>();
 
         for (int i = 0; i < queueModel.size(); i++) {
             ids.add(queueModel.get(i).id());
         }
 
-        Playlist playlist = music.createPlaylist(
+        return music.createPlaylist(
                 playlistName.getText(),
-                "Created in the desktop player",
+                playlistDescription,
                 ids
         );
+    }
 
-        music.selectPlaylist(playlist);
-        queueChanged = false;
+    private void savePlaylist() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Save MusicFlow playlist");
+        chooser.setSelectedFile(new File("playlist.musicflow"));
+
+        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        Path path = chooser.getSelectedFile().toPath();
+
+        if (Files.exists(path)) {
+            int answer = JOptionPane.showConfirmDialog(
+                    this,
+                    "Replace the existing playlist file?",
+                    "Save playlist",
+                    JOptionPane.YES_NO_OPTION
+            );
+
+            if (answer != JOptionPane.YES_OPTION) {
+                return;
+            }
+        }
+
+        try {
+            playlistFile.save(path, buildQueuePlaylist());
+            status.setText("Playlist saved: " + path.getFileName());
+        } catch (IOException | IllegalArgumentException exception) {
+            showError(exception);
+        }
+    }
+
+    private void loadPlaylist() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Load MusicFlow playlist");
+
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        try {
+            PlaylistFile.SavedPlaylist saved = playlistFile.load(
+                    chooser.getSelectedFile().toPath()
+            );
+
+            Playlist playlist = music.createPlaylist(
+                    saved.name(),
+                    saved.description(),
+                    saved.trackIds()
+            );
+
+            playlistName.setText(playlist.name());
+            playlistDescription = playlist.description();
+            queueModel.clear();
+
+            for (Track track : playlist.tracks()) {
+                queueModel.addElement(track);
+            }
+
+            if (!queueModel.isEmpty()) {
+                queueList.setSelectedIndex(0);
+            }
+
+            music.selectPlaylist(playlist);
+            queueChanged = false;
+
+            setBusy(false);
+            status.setText("Playlist loaded: " + playlist.name());
+        } catch (IOException | IllegalArgumentException exception) {
+            showError(exception);
+        }
     }
 
     private void startPlayback(boolean next) {
@@ -461,15 +553,19 @@ public final class MusicPlayerFrame extends JFrame {
         }
 
         if (event.type() == PlaybackEvent.Type.COMPLETED) {
-            historyModel.clear();
+            refreshHistory();
+        }
+    }
 
-            for (var entry : music.historyEntries()) {
-                historyModel.addElement(
-                        entry.track().artist()
-                                + " — "
-                                + entry.track().title()
-                );
-            }
+    private void refreshHistory() {
+        historyModel.clear();
+
+        for (var entry : music.historyEntries()) {
+            historyModel.addElement(
+                    entry.track().artist()
+                            + " — "
+                            + entry.track().title()
+            );
         }
     }
 
@@ -483,6 +579,8 @@ public final class MusicPlayerFrame extends JFrame {
 
         addButton.setEnabled(!busy);
         removeButton.setEnabled(!busy);
+        saveButton.setEnabled(!busy);
+        loadButton.setEnabled(!busy);
         queueList.setEnabled(!busy);
         playlistName.setEnabled(!busy);
 
