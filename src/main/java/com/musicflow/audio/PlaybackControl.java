@@ -8,6 +8,37 @@ public final class PlaybackControl {
     private boolean stopped;
     private SourceDataLine line;
 
+    private long durationFrames = -1;
+
+    public record Progress(long positionMillis, long durationMillis) {
+    }
+
+    synchronized void setDurationFrames(long durationFrames) {
+        this.durationFrames = durationFrames;
+    }
+
+    public synchronized Progress progress() {
+        long playedFrames = line != null && line.isOpen()
+                ? Math.max(0, line.getLongFramePosition())
+                : 0;
+
+        long durationMillis = durationFrames > 0
+                ? toMillis(durationFrames)
+                : -1;
+
+        long positionMillis = toMillis(playedFrames);
+
+        if (durationMillis >= 0) {
+            positionMillis = Math.min(positionMillis, durationMillis);
+        }
+
+        return new Progress(positionMillis, durationMillis);
+    }
+
+    private static long toMillis(long frames) {
+        return (long) (frames * 1000.0 / PcmAudioPlayer.SAMPLE_RATE);
+    }
+
     public synchronized void pause() {
         if (stopped) {
             return;
