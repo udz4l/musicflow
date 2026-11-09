@@ -29,7 +29,7 @@ public final class MusicServiceFacade {
 
     private final MusicSource source;
     private final ObservablePlayer player;
-    private final ListeningHistory history = new ListeningHistory();
+    private final ListeningHistory history;
 
     private List<Track> catalog = List.of();
     private Playlist playlist;
@@ -44,6 +44,14 @@ public final class MusicServiceFacade {
             MusicSource source,
             ObservablePlayer player
     ) {
+        this(source, player, new ListeningHistory());
+    }
+
+    public MusicServiceFacade(
+            MusicSource source,
+            ObservablePlayer player,
+            ListeningHistory history
+    ) {
         this.source = Objects.requireNonNull(
                 source,
                 "Music source is required"
@@ -54,7 +62,12 @@ public final class MusicServiceFacade {
                 "Player is required"
         );
 
-        player.addListener(history);
+        this.history = Objects.requireNonNull(
+                history,
+                "History is required"
+        );
+
+        this.player.addListener(this.history);
     }
 
     public List<Track> loadCatalog() throws IOException {
